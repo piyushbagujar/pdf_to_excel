@@ -80,21 +80,33 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getFirestore, collection, addDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         setLogLevel('debug');
         
-        // Global variables provided by the environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
+        // --- YOUR FIREBASE CONFIGURATION GOES HERE ---
+        // Get this from your own Firebase project console.
+        // NOTE: The error 'auth/configuration-not-found' means you need to enable the Anonymous sign-in method in your Firebase project.
+        // Go to Authentication > Sign-in method > Anonymous and enable it.
+        const firebaseConfig = {
+            apiKey: "AIzaSyDpzAS8JURIpu5Ie8cbbxVkNu4sSpnLLE0",
+            authDomain: "pdftoexcel-6a689.firebaseapp.com",
+            projectId: "pdftoexcel-6a689",
+            storageBucket: "pdftoexcel-6a689.firebasestorage.app",
+            messagingSenderId: "47426392464",
+            appId: "1:47426392464:web:e5a6f3d8cfc17b0a97e315",
+            measurementId: "G-3Q38V589SY"
+        };
+        
+        const API_KEY = "AIzaSyAOEXExC8EFv_UKhUkUMRj0DSkDfZA_Ywk";
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
+        
         let db;
         let auth;
         let userId = null;
         let isAuthReady = false;
         let allExtractedData = [];
-        const COLLECTION_PATH = `artifacts/${appId}/users`;
+        const COLLECTION_PATH = `bills_data`; // Use a simple collection name for your own project
 
         document.getElementById('pdf-upload').addEventListener('change', handleFileSelect, false);
         document.getElementById('download-btn').addEventListener('click', downloadCSV, false);
@@ -106,7 +118,7 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
-                onAuthStateChanged(auth, async (user) => {
+                onAuthStateChanged(auth, (user) => {
                     console.log("Auth state changed. User:", user ? user.uid : 'null');
                     if (user) {
                         userId = user.uid;
@@ -115,29 +127,19 @@
                         document.getElementById('file-input-label').classList.remove('disabled');
                         listenForBills();
                     } else {
-                        if (initialAuthToken) {
-                            try {
-                                await signInWithCustomToken(auth, initialAuthToken);
-                            } catch (e) {
-                                console.error("Custom token sign-in failed, trying anonymous.", e);
-                                await signInAnonymously(auth);
-                            }
-                        } else {
-                            await signInAnonymously(auth);
-                        }
+                         // Sign in anonymously to get a user ID
+                        signInAnonymously(auth);
                     }
                 });
 
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
             } catch (error) {
                 console.error("Firebase initialization failed:", error);
-                showError("Failed to initialize the database. Please try again later.");
+                showError("Failed to initialize the database. Please check your Firebase config and security rules.");
             }
         }
+        
+        // Ensure initializeFirebase is called only once after the document is ready
+        window.addEventListener('load', initializeFirebase);
 
         function listenForBills() {
             if (!db || !userId) {
@@ -168,8 +170,6 @@
             });
         }
         
-        initializeFirebase();
-
         function showLoading(message) {
             document.getElementById('loading-spinner').classList.remove('hidden');
             document.getElementById('loading-message').textContent = message;
@@ -298,9 +298,6 @@
             Format the output as a single JSON object. Do not include any other text or explanation. If a field is not found, use a value of 'N/A'.
             `;
 
-            const apiKey = "AIzaSyAOEXExC8EFv_UKhUkUMRj0DSkDfZA_Ywk";
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-
             const payload = {
                 contents: [{
                     parts: [
@@ -316,7 +313,7 @@
 
             while (currentRetry < maxRetries) {
                 try {
-                    const response = await fetch(apiUrl, {
+                    const response = await fetch(API_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
