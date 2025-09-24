@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to Excel Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div id="app-container" class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl text-center">
+        <h1 class="text-3xl font-bold text-gray-800 mb-4">PDF to Excel Converter</h1>
+        <p class="text-gray-600 mb-6">Upload your electricity bill PDF to extract key company fields.</p>
+
+        <input type="file" id="pdf-upload" accept=".pdf" class="hidden">
+        <label for="pdf-upload" class="cursor-pointer bg-blue-600 text-white font-semibold py-3 px-6 rounded-full hover:bg-blue-700 transition duration-300 shadow-md">
+            Choose PDF File
+        </label>
+
+        <div id="loading-spinner" class="mt-8 hidden flex items-center justify-center text-blue-600">
+            <svg class="animate-spin -ml-1 mr-3 h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>Extracting data...</span>
+        </div>
+
+        <div id="extracted-data-container" class="mt-8 w-full hidden">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">Extracted Information</h2>
+            <div id="extracted-data" class="bg-gray-50 p-4 rounded-lg text-left overflow-x-auto">
+                <!-- Extracted data will be inserted here -->
+            </div>
+            <div class="mt-4 flex flex-col sm:flex-row justify-center space-y-2 sm:space-y-0 sm:space-x-4">
+                <button onclick="downloadJSON()" class="bg-emerald-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-emerald-700 transition duration-300 shadow-md">
+                    Download as JSON
+                </button>
+                <button onclick="downloadCSV()" class="bg-purple-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-purple-700 transition duration-300 shadow-md">
+                    Download as CSV
+                </button>
+            </div>
+        </div>
+
+        <div id="error-message" class="mt-8 text-red-600 font-semibold hidden"></div>
+
+        <div id="modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center p-4 hidden">
+            <div class="bg-white rounded-lg shadow-xl p-6 max-w-sm w-full">
+                <h3 id="modal-title" class="text-lg font-bold mb-4"></h3>
+                <p id="modal-content" class="text-gray-700 mb-4"></p>
+                <button onclick="closeModal()" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('pdf-upload').addEventListener('change', handleFileSelect, false);
+
+        let extractedData = null;
+
+        function showLoading() {
+            document.getElementById('loading-spinner').classList.remove('hidden');
+            document.getElementById('extracted-data-container').classList.add('hidden');
+            document.getElementById('error-message').classList.add('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-spinner').classList.add('hidden');
+        }
+
+        function showData(data) {
+            hideLoading();
+            const container = document.getElementById('extracted-data');
+            container.innerHTML = '';
+            let html = '';
+            for (const [key, value] of Object.entries(data)) {
+                if (typeof value === 'object' && value !== null) {
+                    html += `<div class="mb-4">
+                                <span class="font-semibold text-gray-800">${key}:</span>
+                                <div class="ml-4">
+                                    ${Object.entries(value).map(([subKey, subValue]) => `
+                                        <div class="flex justify-between items-center py-1 border-b last:border-b-0">
+                                            <span class="text-gray-600">${subKey}</span>
+                                            <span class="text-gray-900 font-medium">${subValue}</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>`;
+                } else {
+                    html += `<div class="flex justify-between items-center py-2 border-b last:border-b-0">
+                                <span class="font-semibold text-gray-800">${key}</span>
+                                <span class="text-gray-900 font-medium">${value}</span>
+                            </div>`;
+                }
+            }
+            container.innerHTML = html;
+            document.getElementById('extracted-data-container').classList.remove('hidden');
+        }
+
+        function showError(message) {
+            hideLoading();
+            const errorElement = document.getElementById('error-message');
+            errorElement.textContent = `Error: ${message}`;
+            errorElement.classList.remove('hidden');
+            document.getElementById('extracted-data-container').classList.add('hidden');
+        }
+
+        function openModal(title, content) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-content').textContent = content;
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.add('hidden');
+        }
+
+        function downloadJSON() {
+            if (!extractedData) {
+                openModal('Download Error', 'No data to download. Please upload and process a PDF first.');
+                return;
+            }
+            const jsonString = JSON.stringify(extractedData, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'extracted_data.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function downloadCSV() {
+            if (!extractedData) {
+                openModal('Download Error', 'No data to download. Please upload and process a PDF first.');
+                return;
+            }
+            let csvContent = 'Field,Value\n';
+            for (const [key, value] of Object.entries(extractedData)) {
+                if (typeof value === 'object' && value !== null) {
+                    for (const [subKey, subValue] of Object.entries(value)) {
+                        csvContent += `"${key} - ${subKey}","${subValue}"\n`;
+                    }
+                } else {
+                    csvContent += `"${key}","${value}"\n`;
+                }
+            }
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'extracted_data.csv';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        async function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+            showLoading();
+
+            try {
+                const base64Pdf = await fileToBase64(file);
+                await processPdfWithGemini(base64Pdf);
+            } catch (error) {
+                console.error("Failed to process file:", error);
+                showError("Could not process the file. Please try again.");
+            }
+        }
+
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = error => reject(error);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function processPdfWithGemini(base64Pdf) {
+            const prompt = `
+            Extract the following fields from the electricity bill PDF:
+            - **Consumer No.**
+            - **Consumer Name**
+            - **Address**
+            - **GSTIN**
+            - **PAN**
+            - **Bill Date**
+            - **Due Date**
+            - **Total Bill Amount Payable Rs.**
+            - **Total Current Bill As Per Tariff**
+            - **Energy Charges** (This should be a nested object with 'Consumption Type', 'Units', 'Rate', and 'Charges Rs.')
+            - **Electricity Duty** (This should be a nested object with 'E.D. on (Rs.)', 'Rate %', and 'Amount Rs.')
+            - **Total Consumption** (Find the row "Total Consumption" and get the value for 'KWH' and 'KVAH')
+            - **Billed Demand (KVA)** (Find the value for Billed Demand)
+            - **Last Month Payment**
+            - **Payment considered upto**
+
+            Format the output as a single JSON object. Do not include any other text or explanation. The keys in the JSON should be exactly as listed above. The values for nested objects should also match the keys provided. If a field is not found, use a value of 'N/A'.
+            `;
+
+            const apiKey = "AIzaSyAOEXExC8EFv_UKhUkUMRj0DSkDfZA_Ywk";
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+            const payload = {
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inlineData: { mimeType: "application/pdf", data: base64Pdf } }
+                    ]
+                }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            "Consumer No.": { "type": "STRING" },
+                            "Consumer Name": { "type": "STRING" },
+                            "Address": { "type": "STRING" },
+                            "GSTIN": { "type": "STRING" },
+                            "PAN": { "type": "STRING" },
+                            "Bill Date": { "type": "STRING" },
+                            "Due Date": { "type": "STRING" },
+                            "Total Bill Amount Payable Rs.": { "type": "STRING" },
+                            "Total Current Bill As Per Tariff": { "type": "STRING" },
+                            "Energy Charges": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "Consumption Type": { "type": "STRING" },
+                                    "Units": { "type": "STRING" },
+                                    "Rate": { "type": "STRING" },
+                                    "Charges Rs.": { "type": "STRING" }
+                                }
+                            },
+                            "Electricity Duty": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "E.D. on (Rs.)": { "type": "STRING" },
+                                    "Rate %": { "type": "STRING" },
+                                    "Amount Rs.": { "type": "STRING" }
+                                }
+                            },
+                            "Total Consumption": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "KWH": { "type": "STRING" },
+                                    "KVAH": { "type": "STRING" }
+                                }
+                            },
+                            "Billed Demand (KVA)": { "type": "STRING" },
+                            "Last Month Payment": { "type": "STRING" },
+                            "Payment considered upto": { "type": "STRING" }
+                        }
+                    }
+                },
+            };
+
+            const maxRetries = 3;
+            let currentRetry = 0;
+            const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
+            while (currentRetry < maxRetries) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        if (response.status === 429) { // Rate limit exceeded
+                            const retryAfter = response.headers.get('Retry-After') || (1 << currentRetry);
+                            await delay(retryAfter * 1000);
+                            currentRetry++;
+                            continue;
+                        }
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (jsonText) {
+                        try {
+                            extractedData = JSON.parse(jsonText);
+                            showData(extractedData);
+                        } catch (e) {
+                            showError("Invalid JSON response from API. Please try a different PDF.");
+                            console.error("Parsing error:", e);
+                        }
+                    } else {
+                        showError("No data was extracted. Please ensure the PDF is a valid bill.");
+                    }
+                    return;
+
+                } catch (error) {
+                    console.error('API call failed:', error);
+                    currentRetry++;
+                    if (currentRetry >= maxRetries) {
+                        showError("Failed to connect to the API after multiple retries. Please check your network connection.");
+                        throw error;
+                    }
+                    await delay((1 << currentRetry) * 1000);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
