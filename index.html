@@ -11,17 +11,35 @@
             font-family: 'Inter', sans-serif;
             background-color: #f3f4f6;
         }
+        .file-input-label {
+            cursor: pointer;
+            background-color: #2563eb;
+            color: white;
+            font-weight: 600;
+            padding: 0.75rem 1.5rem;
+            border-radius: 9999px;
+            transition-property: background-color;
+            transition-duration: 300ms;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .file-input-label:hover {
+            background-color: #1e40af;
+        }
+        .file-input-label.disabled {
+            background-color: #9ca3af;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
 
     <div id="app-container" class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl text-center">
-        <h1 class="text-3xl font-bold text-gray-800 mb-4">PDF to Excel Converter</h1>
-        <p class="text-gray-600 mb-6">Upload your electricity bill PDF to extract key company fields.</p>
-
-        <input type="file" id="pdf-upload" accept=".pdf" class="hidden">
-        <label for="pdf-upload" class="cursor-pointer bg-blue-600 text-white font-semibold py-3 px-6 rounded-full hover:bg-blue-700 transition duration-300 shadow-md">
-            Choose PDF File
+        <h1 class="text-3xl font-bold text-gray-800 mb-4">Batch PDF to Excel Converter</h1>
+        <p class="text-gray-600 mb-6">Upload multiple electricity bill PDFs to extract and combine key company fields into a single Excel-friendly file.</p>
+        <p id="user-id" class="text-xs text-gray-500 mb-4 break-words">User ID: Connecting to database...</p>
+        <input type="file" id="pdf-upload" accept=".pdf" multiple class="hidden">
+        <label for="pdf-upload" id="file-input-label" class="file-input-label disabled">
+            Choose PDF Files
         </label>
 
         <div id="loading-spinner" class="mt-8 hidden flex items-center justify-center text-blue-600">
@@ -29,20 +47,21 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span>Extracting data...</span>
+            <span id="loading-message">Processing files...</span>
+        </div>
+
+        <div id="success-message" class="mt-8 hidden text-green-600 font-semibold">
+            All files processed successfully!
         </div>
 
         <div id="extracted-data-container" class="mt-8 w-full hidden">
-            <h2 class="text-xl font-bold text-gray-800 mb-4">Extracted Information</h2>
-            <div id="extracted-data" class="bg-gray-50 p-4 rounded-lg text-left overflow-x-auto">
-                <!-- Extracted data will be inserted here -->
+            <h2 class="text-xl font-bold text-gray-800 mb-4">Processed Bills</h2>
+            <div id="processed-files-list" class="bg-gray-50 p-4 rounded-lg text-left overflow-x-auto mb-4">
+                <!-- List of processed files from Firestore will be added here -->
             </div>
             <div class="mt-4 flex flex-col sm:flex-row justify-center space-y-2 sm:space-y-0 sm:space-x-4">
-                <button onclick="downloadJSON()" class="bg-emerald-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-emerald-700 transition duration-300 shadow-md">
-                    Download as JSON
-                </button>
-                <button onclick="downloadCSV()" class="bg-purple-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-purple-700 transition duration-300 shadow-md">
-                    Download as CSV
+                <button id="download-btn" class="bg-purple-600 text-white font-semibold py-2 px-4 rounded-full hover:bg-purple-700 transition duration-300 shadow-md">
+                    Download All as CSV
                 </button>
             </div>
         </div>
@@ -58,48 +77,119 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        setLogLevel('debug');
+        
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+        let allExtractedData = [];
+        const COLLECTION_PATH = `artifacts/${appId}/users`;
+
         document.getElementById('pdf-upload').addEventListener('change', handleFileSelect, false);
+        document.getElementById('download-btn').addEventListener('click', downloadCSV, false);
 
-        let extractedData = null;
+        // --- Firebase Initialization and Authentication ---
+        async function initializeFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                onAuthStateChanged(auth, async (user) => {
+                    console.log("Auth state changed. User:", user ? user.uid : 'null');
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id').textContent = `User ID: ${userId}`;
+                        isAuthReady = true;
+                        document.getElementById('file-input-label').classList.remove('disabled');
+                        listenForBills();
+                    } else {
+                        if (initialAuthToken) {
+                            try {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } catch (e) {
+                                console.error("Custom token sign-in failed, trying anonymous.", e);
+                                await signInAnonymously(auth);
+                            }
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
 
-        function showLoading() {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                showError("Failed to initialize the database. Please try again later.");
+            }
+        }
+
+        function listenForBills() {
+            if (!db || !userId) {
+                console.warn("Firestore or User ID not ready. Aborting listener setup.");
+                return;
+            }
+            console.log(`Setting up Firestore listener for user: ${userId}`);
+            const billsCollection = collection(db, `${COLLECTION_PATH}/${userId}/bills`);
+            const q = query(billsCollection);
+
+            onSnapshot(q, (querySnapshot) => {
+                console.log("Received data from Firestore. Updating UI.");
+                allExtractedData = [];
+                const listContainer = document.getElementById('processed-files-list');
+                listContainer.innerHTML = '';
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    data.id = doc.id;
+                    allExtractedData.push(data);
+                    showProcessedFile(data.FileName);
+                });
+                if (allExtractedData.length > 0) {
+                    document.getElementById('extracted-data-container').classList.remove('hidden');
+                }
+            }, (error) => {
+                console.error("Error listening to Firestore:", error);
+                showError("Failed to load your processed bills. Please refresh the page.");
+            });
+        }
+        
+        initializeFirebase();
+
+        function showLoading(message) {
             document.getElementById('loading-spinner').classList.remove('hidden');
-            document.getElementById('extracted-data-container').classList.add('hidden');
+            document.getElementById('loading-message').textContent = message;
             document.getElementById('error-message').classList.add('hidden');
+            document.getElementById('success-message').classList.add('hidden');
         }
 
         function hideLoading() {
             document.getElementById('loading-spinner').classList.add('hidden');
         }
 
-        function showData(data) {
-            hideLoading();
-            const container = document.getElementById('extracted-data');
-            container.innerHTML = '';
-            let html = '';
-            for (const [key, value] of Object.entries(data)) {
-                if (typeof value === 'object' && value !== null) {
-                    html += `<div class="mb-4">
-                                <span class="font-semibold text-gray-800">${key}:</span>
-                                <div class="ml-4">
-                                    ${Object.entries(value).map(([subKey, subValue]) => `
-                                        <div class="flex justify-between items-center py-1 border-b last:border-b-0">
-                                            <span class="text-gray-600">${subKey}</span>
-                                            <span class="text-gray-900 font-medium">${subValue}</span>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                            </div>`;
-                } else {
-                    html += `<div class="flex justify-between items-center py-2 border-b last:border-b-0">
-                                <span class="font-semibold text-gray-800">${key}</span>
-                                <span class="text-gray-900 font-medium">${value}</span>
-                            </div>`;
-                }
-            }
-            container.innerHTML = html;
-            document.getElementById('extracted-data-container').classList.remove('hidden');
+        function showProcessedFile(fileName) {
+            const listContainer = document.getElementById('processed-files-list');
+            const fileElement = document.createElement('div');
+            fileElement.className = "flex items-center justify-between py-2 border-b last:border-b-0";
+            fileElement.innerHTML = `
+                <span class="text-gray-800 font-medium">${fileName}</span>
+                <span class="text-green-500">✓ Saved</span>
+            `;
+            listContainer.appendChild(fileElement);
         }
 
         function showError(message) {
@@ -107,7 +197,6 @@
             const errorElement = document.getElementById('error-message');
             errorElement.textContent = `Error: ${message}`;
             errorElement.classList.remove('hidden');
-            document.getElementById('extracted-data-container').classList.add('hidden');
         }
 
         function openModal(title, content) {
@@ -120,57 +209,75 @@
             document.getElementById('modal').classList.add('hidden');
         }
 
-        function downloadJSON() {
-            if (!extractedData) {
-                openModal('Download Error', 'No data to download. Please upload and process a PDF first.');
-                return;
-            }
-            const jsonString = JSON.stringify(extractedData, null, 2);
-            const blob = new Blob([jsonString], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'extracted_data.json';
-            a.click();
-            URL.revokeObjectURL(a.href);
-        }
-
         function downloadCSV() {
-            if (!extractedData) {
-                openModal('Download Error', 'No data to download. Please upload and process a PDF first.');
+            if (allExtractedData.length === 0) {
+                openModal('Download Error', 'No data to download. Please upload and process PDF files first.');
                 return;
             }
-            let csvContent = 'Field,Value\n';
-            for (const [key, value] of Object.entries(extractedData)) {
-                if (typeof value === 'object' && value !== null) {
-                    for (const [subKey, subValue] of Object.entries(value)) {
-                        csvContent += `"${key} - ${subKey}","${subValue}"\n`;
+
+            // Get all unique keys from all documents to form the CSV header
+            const allKeys = new Set();
+            allExtractedData.forEach(item => {
+                Object.keys(item).forEach(key => {
+                    if (key !== 'id' && key !== 'FileName') {
+                        allKeys.add(key);
                     }
-                } else {
-                    csvContent += `"${key}","${value}"\n`;
-                }
-            }
+                });
+            });
+            const sortedKeys = Array.from(allKeys).sort();
+
+            // Create the header row: "Field Name", then one column for each file
+            let header = ["Field Name"].concat(allExtractedData.map(data => data.FileName));
+            let csvContent = header.map(h => `"${h.toString().replace(/"/g, '""')}"`).join(',') + '\n';
+        
+            // Create the data rows
+            sortedKeys.forEach(fieldName => {
+                let row = [`"${fieldName.toString().replace(/"/g, '""')}"`];
+                allExtractedData.forEach(fileData => {
+                    const value = fileData[fieldName] !== undefined ? fileData[fieldName] : 'N/A';
+                    // Escape double quotes in the value
+                    const escapedValue = String(value).replace(/"/g, '""');
+                    row.push(`"${escapedValue}"`);
+                });
+                csvContent += row.join(',') + '\n';
+            });
+        
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'extracted_data.csv';
+            a.download = 'bills_data.csv';
             a.click();
             URL.revokeObjectURL(a.href);
         }
 
         async function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (!file) {
+            if (!isAuthReady) {
+                showError("User not authenticated. Please wait a moment and try again.");
                 return;
             }
-            showLoading();
 
-            try {
-                const base64Pdf = await fileToBase64(file);
-                await processPdfWithGemini(base64Pdf);
-            } catch (error) {
-                console.error("Failed to process file:", error);
-                showError("Could not process the file. Please try again.");
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                try {
+                    showLoading(`Processing file ${i + 1} of ${files.length}: ${file.name}`);
+                    const base64Pdf = await fileToBase64(file);
+                    const data = await processPdfWithGemini(base64Pdf);
+                    if (data) {
+                        data.FileName = file.name;
+                        await addDoc(collection(db, `${COLLECTION_PATH}/${userId}/bills`), data);
+                    }
+                } catch (error) {
+                    console.error("Failed to process file:", error);
+                    showError(`Failed to process ${file.name}. Please try again.`);
+                    return;
+                }
             }
+
+            hideLoading();
+            document.getElementById('success-message').classList.remove('hidden');
         }
 
         function fileToBase64(file) {
@@ -184,24 +291,11 @@
 
         async function processPdfWithGemini(base64Pdf) {
             const prompt = `
-            Extract the following fields from the electricity bill PDF:
-            - **Consumer No.**
-            - **Consumer Name**
-            - **Address**
-            - **GSTIN**
-            - **PAN**
-            - **Bill Date**
-            - **Due Date**
-            - **Total Bill Amount Payable Rs.**
-            - **Total Current Bill As Per Tariff**
-            - **Energy Charges** (This should be a nested object with 'Consumption Type', 'Units', 'Rate', and 'Charges Rs.')
-            - **Electricity Duty** (This should be a nested object with 'E.D. on (Rs.)', 'Rate %', and 'Amount Rs.')
-            - **Total Consumption** (Find the row "Total Consumption" and get the value for 'KWH' and 'KVAH')
-            - **Billed Demand (KVA)** (Find the value for Billed Demand)
-            - **Last Month Payment**
-            - **Payment considered upto**
+            You are a data extraction expert. Your task is to extract all key fields and their corresponding values from the provided electricity bill PDF. Identify fields that would be important for a company's financial and technical records.
 
-            Format the output as a single JSON object. Do not include any other text or explanation. The keys in the JSON should be exactly as listed above. The values for nested objects should also match the keys provided. If a field is not found, use a value of 'N/A'.
+            For each field, provide its exact name as the key and its corresponding value. If a field has sub-fields (like 'Energy Charges' having 'Units' and 'Rate'), represent them as nested key-value pairs.
+
+            Format the output as a single JSON object. Do not include any other text or explanation. If a field is not found, use a value of 'N/A'.
             `;
 
             const apiKey = "AIzaSyAOEXExC8EFv_UKhUkUMRj0DSkDfZA_Ywk";
@@ -213,51 +307,7 @@
                         { text: prompt },
                         { inlineData: { mimeType: "application/pdf", data: base64Pdf } }
                     ]
-                }],
-                generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            "Consumer No.": { "type": "STRING" },
-                            "Consumer Name": { "type": "STRING" },
-                            "Address": { "type": "STRING" },
-                            "GSTIN": { "type": "STRING" },
-                            "PAN": { "type": "STRING" },
-                            "Bill Date": { "type": "STRING" },
-                            "Due Date": { "type": "STRING" },
-                            "Total Bill Amount Payable Rs.": { "type": "STRING" },
-                            "Total Current Bill As Per Tariff": { "type": "STRING" },
-                            "Energy Charges": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "Consumption Type": { "type": "STRING" },
-                                    "Units": { "type": "STRING" },
-                                    "Rate": { "type": "STRING" },
-                                    "Charges Rs.": { "type": "STRING" }
-                                }
-                            },
-                            "Electricity Duty": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "E.D. on (Rs.)": { "type": "STRING" },
-                                    "Rate %": { "type": "STRING" },
-                                    "Amount Rs.": { "type": "STRING" }
-                                }
-                            },
-                            "Total Consumption": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "KWH": { "type": "STRING" },
-                                    "KVAH": { "type": "STRING" }
-                                }
-                            },
-                            "Billed Demand (KVA)": { "type": "STRING" },
-                            "Last Month Payment": { "type": "STRING" },
-                            "Payment considered upto": { "type": "STRING" }
-                        }
-                    }
-                },
+                }]
             };
 
             const maxRetries = 3;
@@ -273,7 +323,7 @@
                     });
 
                     if (!response.ok) {
-                        if (response.status === 429) { // Rate limit exceeded
+                        if (response.status === 429) {
                             const retryAfter = response.headers.get('Retry-After') || (1 << currentRetry);
                             await delay(retryAfter * 1000);
                             currentRetry++;
@@ -283,31 +333,48 @@
                     }
 
                     const result = await response.json();
-                    const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    let jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (jsonText && jsonText.startsWith('```json')) {
+                        jsonText = jsonText.substring('```json'.length, jsonText.lastIndexOf('```')).trim();
+                    }
 
                     if (jsonText) {
                         try {
-                            extractedData = JSON.parse(jsonText);
-                            showData(extractedData);
+                            const data = JSON.parse(jsonText);
+                            const flattenedData = flattenObject(data);
+                            return flattenedData;
                         } catch (e) {
-                            showError("Invalid JSON response from API. Please try a different PDF.");
                             console.error("Parsing error:", e);
+                            return null;
                         }
                     } else {
-                        showError("No data was extracted. Please ensure the PDF is a valid bill.");
+                        return null;
                     }
-                    return;
-
                 } catch (error) {
                     console.error('API call failed:', error);
                     currentRetry++;
                     if (currentRetry >= maxRetries) {
-                        showError("Failed to connect to the API after multiple retries. Please check your network connection.");
                         throw error;
                     }
                     await delay((1 << currentRetry) * 1000);
                 }
             }
+        }
+        
+        function flattenObject(obj, parentKey = '') {
+            let flattened = {};
+            for (let key in obj) {
+                if (obj.hasOwnProperty(key)) {
+                    const newKey = parentKey ? `${parentKey} - ${key}` : key;
+                    if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        Object.assign(flattened, flattenObject(obj[key], newKey));
+                    } else {
+                        flattened[newKey] = obj[key];
+                    }
+                }
+            }
+            return flattened;
         }
     </script>
 </body>
